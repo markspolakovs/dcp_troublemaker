@@ -189,7 +189,7 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 				panic(err)
 			}
 			logPacket(logger, false, packet, "")
-			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, fePackets, bePackets); err != nil {
+			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, false, fePackets, bePackets); err != nil {
 				logger.Error().Err(err).Msg("script evaluation error")
 			}
 		}
@@ -210,7 +210,7 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 				panic(err)
 			}
 			logPacket(logger, true, packet, "")
-			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, fePackets, bePackets); err != nil {
+			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, true, fePackets, bePackets); err != nil {
 				logger.Error().Err(err).Str("side", "be").Msg("script evaluation error")
 			}
 		}

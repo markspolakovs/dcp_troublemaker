@@ -78,41 +78,35 @@ func packetFromObject(obj *otto.Object) *memd.Packet {
 	}
 }
 
-func (ps *PacketScripts) EvaluateScriptForPacket(ctx context.Context, logger zerolog.Logger, packet *memd.Packet, be, fe chan<- packetWrapper) error {
+func (ps *PacketScripts) EvaluateScriptForPacket(ctx context.Context, logger zerolog.Logger, packet *memd.Packet, cameFromBE bool, be, fe chan<- packetWrapper) error {
 	forward := func(pkt packetWrapper) {
-		switch pkt.packet.Magic {
-		case memd.CmdMagicReq:
-			select {
-			case be <- pkt:
-			case <-ctx.Done():
-				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
-			}
-		case memd.CmdMagicRes:
+		if cameFromBE {
 			select {
 			case fe <- pkt:
 			case <-ctx.Done():
 				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
-		default:
-			logger.Error().Uint8("magic", uint8(packet.Magic)).Msg("invalid magic")
+		} else {
+			select {
+			case be <- pkt:
+			case <-ctx.Done():
+				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
+			}
 		}
 	}
 	reply := func(pkt packetWrapper) {
-		switch pkt.packet.Magic {
-		case memd.CmdMagicReq:
+		if cameFromBE {
 			select {
 			case be <- pkt:
 			case <-ctx.Done():
 				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
-		case memd.CmdMagicRes:
+		} else {
 			select {
 			case fe <- pkt:
 			case <-ctx.Done():
 				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
-		default:
-			logger.Error().Uint8("magic", uint8(packet.Magic)).Msg("invalid magic")
 		}
 	}
 
