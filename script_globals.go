@@ -37,6 +37,7 @@ func (ps *PacketScripts) DefineScriptGlobals(logger zerolog.Logger, forward, rep
 			if arg.IsString() {
 				entry.Msg(arg.String())
 			} else {
+				// TODO: doesn't work
 				raw, err := arg.Export()
 				if err != nil {
 					logger.Error().Err(err).Msg("script log() called with invalid object")
@@ -56,6 +57,7 @@ func (ps *PacketScripts) DefineScriptGlobals(logger zerolog.Logger, forward, rep
 			}
 			entry.Msg(msg.String())
 		} else {
+			// TODO: doesn't work
 			raw, err := call.Argument(1).Export()
 			if err != nil {
 				logger.Error().Err(err).Msg("script log() called with invalid object")

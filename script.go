@@ -126,7 +126,7 @@ func (ps *PacketScripts) EvaluateScriptForPacket(ctx context.Context, logger zer
 	if err != nil {
 		panic(err)
 	}
-	_, err = fn.Call(otto.UndefinedValue(), packetVal)
+	_, err = fn.Call(otto.UndefinedValue(), packetVal, cameFromBE)
 	return err
 }
 
