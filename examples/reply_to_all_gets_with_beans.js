@@ -9,7 +9,7 @@ function CMD_GET(packet) {
         Cas: 3,
         CollectionID: packet.CollectionID,
         Key: packet.Key,
-        Value: [34, 98, 101, 97, 110, 115, 34],
+        Value: stringToBytes("\"beans\""),
         Extras: [0, 0, 0, 0]
     });
 }

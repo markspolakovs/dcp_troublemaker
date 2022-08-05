@@ -30,6 +30,20 @@ func (ps *PacketScripts) DefineScriptGlobals(logger zerolog.Logger, forward, rep
 		})
 		return otto.UndefinedValue()
 	})
+	ps.vm.Set("stringToBytes", func(call otto.FunctionCall) otto.Value {
+		arg := call.Argument(0)
+		bytesVal := []byte(arg.String())
+		val, _ := ps.vm.ToValue(bytesVal)
+		return val
+	})
+	ps.vm.Set("bytesToString", func(call otto.FunctionCall) otto.Value {
+		bytes, err := parseByteArray(call.Argument(0))
+		if err != nil {
+			panic(err)
+		}
+		val, _ := ps.vm.ToValue(string(bytes))
+		return val
+	})
 	ps.vm.Set("log", func(call otto.FunctionCall) otto.Value {
 		entry := logger.Info().Str("script", ps.fileName)
 		if len(call.ArgumentList) == 1 {
