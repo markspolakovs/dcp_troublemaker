@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -15,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"github.com/couchbase/gocbcore/v10/memd"
 	"go.uber.org/atomic"
@@ -25,48 +26,51 @@ var (
 	BackendHost = kingpin.Flag("backend-host", "backend host").Default("127.0.0.1").String()
 	BackendPort = kingpin.Flag("backend-port", "backend port").Default("11210").Int()
 	ListenPort  = kingpin.Flag("listen-port", "port to listen on").Default("11210").Int()
-	Verbosity   = kingpin.Flag("verbose", "verbosity").Short('v').Counter()
-	ScriptPath  = kingpin.Arg("script-path", "path to js").String()
+	ScriptPath  = kingpin.Arg("script-path", "path to js").Required().String()
+	LogLevel    = kingpin.Flag("log-level", "log level").Default("info").String()
+	LogPretty   = kingpin.Flag("log-pretty", "pretty logging").Bool()
 )
 
 // logPacket logs the details of the packet, respecting Verbosity.
-func logPacket(isBEToFE bool, cid uint64, packet *memd.Packet) {
-	prefix := "-->"
+func logPacket(logger zerolog.Logger, isBEToFE bool, packet *memd.Packet, script string) {
+	var entry *zerolog.Event
+	if script != "" {
+		entry = logger.Info()
+	} else if logger.GetLevel() <= zerolog.TraceLevel {
+		entry = logger.Trace()
+	} else {
+		entry = logger.Debug()
+	}
 	if isBEToFE {
-		prefix = "<--"
+		entry = entry.Str("direction", "be->fe")
+	} else {
+		entry = entry.Str("direction", "fe->be")
 	}
-	switch *Verbosity {
-	case 0:
-	case 1:
-		// log just the opaque, magic, opcode, and result
-		if isBEToFE {
-			log.Printf("[%d] %s opaque 0x%x magic %s opcode 0x%x (%s) result %s", cid, prefix, packet.Opaque, packet.Magic.String(), packet.Command, packet.Command.Name(), packet.Status.String())
-		} else {
-			log.Printf("[%d] %s opaque 0x%x magic %s opcode 0x%x (%s)", cid, prefix, packet.Opaque, packet.Magic.String(), packet.Command, packet.Command.Name())
-		}
-	case 2:
-		// also include the key and value
-		var key string
+	entry = entry.Uint32("opaque", packet.Opaque).
+		Str("magic", packet.Magic.String()).
+		Uint8("opcode", uint8(packet.Command)).
+		Str("command", packet.Command.Name())
+	if script != "" {
+		entry = entry.Str("script", script)
+	}
+	if packet.Magic == memd.CmdMagicRes {
+		entry = entry.Uint16("status", uint16(packet.Status)).Str("result", packet.Status.String())
+	}
+	// at trace, also include the key, value, and extras
+	if logger.GetLevel() <= zerolog.TraceLevel {
 		if utf8.Valid(packet.Key) {
-			key = string(packet.Key)
+			entry = entry.Str("key", string(packet.Key))
 		} else {
-			key = hex.EncodeToString(packet.Key)
+			entry = entry.Bytes("key", packet.Key)
 		}
-		var value string
 		if utf8.Valid(packet.Value) {
-			value = string(packet.Value)
+			entry = entry.Str("value", string(packet.Value))
 		} else {
-			value = hex.EncodeToString(packet.Value)
+			entry = entry.Bytes("value", packet.Value)
 		}
-		if isBEToFE {
-			log.Printf("[%d] %s opaque 0x%x magic %s opcode 0x%x (%s) result %s\nkey: %v\nvalue: %v", cid, prefix, packet.Opaque, packet.Magic.String(), packet.Command, packet.Command.Name(), packet.Status.String(), key, value)
-		} else {
-			log.Printf("[%d] %s opaque 0x%x magic %s opcode 0x%x (%s)\nkey: %v\nvalue: %v", cid, prefix, packet.Opaque, packet.Magic.String(), packet.Command, packet.Command.Name(), key, value)
-		}
-	case 3:
-		// full hex-dump of the packet - use memd.Packet's Stringer
-		log.Printf("[%d] %s %s", cid, prefix, packet.String())
+		entry = entry.Bytes("extras", packet.Extras)
 	}
+	entry.Send()
 }
 
 func hostIsLoopback(host string) bool {
@@ -92,6 +96,18 @@ func hostIsLoopback(host string) bool {
 func main() {
 	kingpin.Parse()
 
+	logLevel, err := zerolog.ParseLevel(*LogLevel)
+	if err != nil {
+		panic(err)
+	}
+	var logOutput io.Writer
+	if *LogPretty {
+		logOutput = zerolog.NewConsoleWriter()
+	} else {
+		logOutput = os.Stdout
+	}
+	log.Logger = zerolog.New(logOutput).With().Timestamp().Logger().Level(logLevel)
+
 	scriptFile, err := ioutil.ReadFile(*ScriptPath)
 	if err != nil {
 		panic(err)
@@ -102,7 +118,7 @@ func main() {
 	}
 
 	if *BackendPort == *ListenPort && hostIsLoopback(*BackendHost) {
-		log.Println("WARNING: backend_port and listen_port are the same and backend_host is loopback - possible infinite loops!")
+		log.Warn().Msg("WARNING: backend_port and listen_port are the same and backend_host is loopback - possible infinite loops!")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
@@ -114,10 +130,10 @@ func main() {
 		panic(err)
 	}
 	defer listener.Close()
-	log.Printf("Listening on %s", addr)
+	log.Info().Str("addr", addr).Msg("Listening")
 	go func() {
 		<-ctx.Done()
-		log.Println("shutting down!")
+		log.Info().Msg("Shutting down!")
 		listener.Close()
 	}()
 	for {
@@ -135,12 +151,18 @@ func main() {
 
 var nextCID atomic.Uint64
 
+type packetWrapper struct {
+	packet *memd.Packet
+	script string
+}
+
 func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 	defer rawConn.Close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cid := nextCID.Inc()
-	log.Printf("[%d] ohai %s\n", cid, rawConn.RemoteAddr())
+	logger := log.With().Uint64("cid", cid).Logger()
+	logger.Info().Str("remoteAddr", rawConn.RemoteAddr().String()).Msg("ohai")
 	beRawConn, err := net.Dial("tcp", net.JoinHostPort(*BackendHost, strconv.Itoa(*BackendPort)))
 	if err != nil {
 		panic(err)
@@ -149,25 +171,26 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 	feConn := memd.NewConn(rawConn)
 	beConn := memd.NewConn(beRawConn)
 
-	bePackets := make(chan *memd.Packet)
-	fePackets := make(chan *memd.Packet)
+	bePackets := make(chan packetWrapper)
+	fePackets := make(chan packetWrapper)
 	go func() {
 		for {
 			packet, _, err := feConn.ReadPacket()
 			switch {
 			case errors.Is(err, io.EOF):
-				log.Printf("[%d] fe EOF, goodbye", cid)
+				logger.Info().Err(err).Str("side", "fe").Msg("goodbye")
 				cancel()
 				return
 			case errors.Is(err, net.ErrClosed), err != nil && strings.HasSuffix(err.Error(), "connection reset by peer"):
-				log.Printf("[%d] network closed, goodbye", cid)
+				logger.Warn().Err(err).Str("side", "fe").Msg("goodbye")
 				cancel()
 				return
 			case err != nil:
 				panic(err)
 			}
-			if err := scripts.EvaluateScriptForPacket(ctx, packet, fePackets, bePackets); err != nil {
-				log.Printf("[%v] script evaluation error: %v", cid, err)
+			logPacket(logger, false, packet, "")
+			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, fePackets, bePackets); err != nil {
+				logger.Error().Err(err).Msg("script evaluation error")
 			}
 		}
 	}()
@@ -176,18 +199,19 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 			packet, _, err := beConn.ReadPacket()
 			switch {
 			case errors.Is(err, io.EOF):
-				log.Printf("[%d] be EOF, goodbye", cid)
+				logger.Info().Err(err).Str("side", "be").Msg("goodbye")
 				cancel()
 				return
 			case errors.Is(err, net.ErrClosed), err != nil && strings.HasSuffix(err.Error(), "connection reset by peer"):
-				log.Printf("[%d] network closed, goodbye", cid)
+				logger.Warn().Err(err).Msg("goodbye")
 				cancel()
 				return
 			case err != nil:
 				panic(err)
 			}
-			if err := scripts.EvaluateScriptForPacket(ctx, packet, fePackets, bePackets); err != nil {
-				log.Printf("[%v] script evaluation error: %v", cid, err)
+			logPacket(logger, true, packet, "")
+			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, fePackets, bePackets); err != nil {
+				logger.Error().Err(err).Str("side", "be").Msg("script evaluation error")
 			}
 		}
 	}()
@@ -197,22 +221,26 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 		case <-ctx.Done():
 			return
 		case fe := <-fePackets:
-			logPacket(false, cid, fe)
-			if err := beConn.WritePacket(fe); err != nil {
+			if fe.script != "" {
+				logPacket(logger, false, fe.packet, fe.script)
+			}
+			if err := beConn.WritePacket(fe.packet); err != nil {
 				panic(err)
 			}
 		case be := <-bePackets:
-			logPacket(true, cid, be)
+			if be.script != "" {
+				logPacket(logger, true, be.packet, be.script)
+			}
 			// HELO needs special handling to ensure we enable the features
-			if be.Command == memd.CmdHello {
-				for feat := 0; feat < (len(be.Value) / 2); feat++ {
-					feature := memd.HelloFeature(binary.BigEndian.Uint16(be.Value[feat*2 : (feat+1)*2]))
+			if be.packet.Command == memd.CmdHello {
+				for feat := 0; feat < (len(be.packet.Value) / 2); feat++ {
+					feature := memd.HelloFeature(binary.BigEndian.Uint16(be.packet.Value[feat*2 : (feat+1)*2]))
 					// ensure we enable it on both the FE and BE
 					feConn.EnableFeature(feature)
 					beConn.EnableFeature(feature)
 				}
 			}
-			if err := feConn.WritePacket(be); err != nil {
+			if err := feConn.WritePacket(be.packet); err != nil {
 				panic(err)
 			}
 		}

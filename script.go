@@ -4,21 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"path/filepath"
 	"sync"
 
 	"github.com/couchbase/gocbcore/v10/memd"
 	"github.com/robertkrimen/otto"
+	"github.com/rs/zerolog"
 )
 
 type PacketScripts struct {
+	fileName string
 	vm       *otto.Otto
 	execLock sync.Mutex
 }
 
 func LoadScriptsFromFile(fileName string, contents []byte) (*PacketScripts, error) {
-	ps := new(PacketScripts)
-	ps.vm = otto.New()
+	ps := &PacketScripts{
+		fileName: filepath.Base(fileName),
+		vm:       otto.New(),
+	}
 	var err error
 	script, err := ps.vm.Compile(fileName, contents)
 	if err != nil {
@@ -74,81 +78,56 @@ func packetFromObject(obj *otto.Object) *memd.Packet {
 	}
 }
 
-func (ps *PacketScripts) EvaluateScriptForPacket(ctx context.Context, packet *memd.Packet, be, fe chan<- *memd.Packet) error {
-	forward := func(pkt *memd.Packet) error {
-		switch pkt.Magic {
+func (ps *PacketScripts) EvaluateScriptForPacket(ctx context.Context, logger zerolog.Logger, packet *memd.Packet, be, fe chan<- packetWrapper) error {
+	forward := func(pkt packetWrapper) {
+		switch pkt.packet.Magic {
 		case memd.CmdMagicReq:
 			select {
 			case be <- pkt:
 			case <-ctx.Done():
-				return ctx.Err()
+				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
 		case memd.CmdMagicRes:
 			select {
 			case fe <- pkt:
 			case <-ctx.Done():
-				return ctx.Err()
+				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
 		default:
-			panic(fmt.Errorf("invalid magic %v", pkt.Magic))
+			logger.Error().Uint8("magic", uint8(packet.Magic)).Msg("invalid magic")
 		}
-		return nil
 	}
-	reply := func(pkt *memd.Packet) error {
-		switch pkt.Magic {
+	reply := func(pkt packetWrapper) {
+		switch pkt.packet.Magic {
 		case memd.CmdMagicReq:
 			select {
 			case be <- pkt:
 			case <-ctx.Done():
-				return ctx.Err()
+				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
 		case memd.CmdMagicRes:
 			select {
 			case fe <- pkt:
 			case <-ctx.Done():
-				return ctx.Err()
+				logger.Warn().Err(ctx.Err()).Msg("dropping packet")
 			}
 		default:
-			panic(fmt.Errorf("invalid magic %v", pkt.Magic))
+			logger.Error().Uint8("magic", uint8(packet.Magic)).Msg("invalid magic")
 		}
-		return nil
 	}
 
 	fn, err := ps.GetFuncForOp(packet.Command)
 	if err != nil {
 		if errors.Is(err, ErrFuncNotDefined) {
 			// fallback to forward
-			forward(packet)
+			forward(packetWrapper{packet: packet})
 			return nil
 		}
 		return err
 	}
 	ps.execLock.Lock()
 	defer ps.execLock.Unlock()
-	ps.vm.Set("forward", func(call otto.FunctionCall) otto.Value {
-		newPacketObj := call.Argument(0)
-		if !newPacketObj.IsObject() {
-			panic("invalid")
-		}
-		if err := forward(packetFromObject(newPacketObj.Object())); err != nil {
-			panic(err)
-		}
-		return otto.UndefinedValue()
-	})
-	ps.vm.Set("reply", func(call otto.FunctionCall) otto.Value {
-		newPacketObj := call.Argument(0)
-		if !newPacketObj.IsObject() {
-			panic("invalid")
-		}
-		if err := reply(packetFromObject(newPacketObj.Object())); err != nil {
-			panic(err)
-		}
-		return otto.UndefinedValue()
-	})
-	ps.vm.Set("log", func(call otto.FunctionCall) otto.Value {
-		log.Printf(call.Argument(0).String(), call.ArgumentList[1:])
-		return otto.UndefinedValue()
-	})
+	ps.DefineScriptGlobals(logger, forward, reply)
 	packetVal, err := ps.vm.ToValue(packet)
 	if err != nil {
 		panic(err)
@@ -159,7 +138,8 @@ func (ps *PacketScripts) EvaluateScriptForPacket(ctx context.Context, packet *me
 
 func (ps *PacketScripts) Copy() *PacketScripts {
 	ps2 := &PacketScripts{
-		vm: ps.vm.Copy(),
+		vm:       ps.vm.Copy(),
+		fileName: ps.fileName,
 	}
 	return ps2
 }

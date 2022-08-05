@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  cb:
+    image: couchbase/server:enterprise-7.1.1
+    ports:
+      - "22210:11210"
+      - "8091-8096:8091-8096"
+      - "18091-18096:18091-18096"
+
+  proxy:
+    build: .
+    ports:
+      - "11210:11210"
+    profiles: ["docker_build"]
