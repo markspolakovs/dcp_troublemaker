@@ -14,42 +14,45 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/couchbase/gocbcore/v10/memd"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-
-	"github.com/couchbase/gocbcore/v10/memd"
 	"go.uber.org/atomic"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 var (
-	BackendHost = kingpin.Flag("backend-host", "backend host").Default("127.0.0.1").String()
-	BackendPort = kingpin.Flag("backend-port", "backend port").Default("11210").Int()
-	ListenPort  = kingpin.Flag("listen-port", "port to listen on").Default("11210").Int()
-	ScriptPath  = kingpin.Arg("script-path", "path to js").Required().String()
-	LogLevel    = kingpin.Flag("log-level", "log level").Default("info").String()
-	LogPretty   = kingpin.Flag("log-pretty", "pretty logging").Bool()
+	BackendHost = kingpin.Flag("backend-host", "backend host").Default("127.0.0.1").String() //nolint:gochecknoglobals
+	BackendPort = kingpin.Flag("backend-port", "backend port").Default("11210").Int()        //nolint:gochecknoglobals
+	ListenPort  = kingpin.Flag("listen-port", "port to listen on").Default("11210").Int()    //nolint:gochecknoglobals
+	ScriptPath  = kingpin.Arg("script-path", "path to js").Required().String()               //nolint:gochecknoglobals
+	LogLevel    = kingpin.Flag("log-level", "log level").Default("info").String()            //nolint:gochecknoglobals
+	LogPretty   = kingpin.Flag("log-pretty", "pretty logging").Bool()                        //nolint:gochecknoglobals
 )
 
 // logPacket logs the details of the packet, respecting Verbosity.
 func logPacket(logger zerolog.Logger, isBEToFE bool, packet *memd.Packet, script string) {
 	var entry *zerolog.Event
-	if script != "" {
+	switch {
+	case script != "":
 		entry = logger.Info()
-	} else if logger.GetLevel() <= zerolog.TraceLevel {
+	case logger.GetLevel() <= zerolog.TraceLevel:
 		entry = logger.Trace()
-	} else {
+	default:
 		entry = logger.Debug()
 	}
+
 	if isBEToFE {
 		entry = entry.Str("direction", "be->fe")
 	} else {
 		entry = entry.Str("direction", "fe->be")
 	}
+
 	entry = entry.Uint32("opaque", packet.Opaque).
 		Str("magic", packet.Magic.String()).
 		Uint8("opcode", uint8(packet.Command)).
 		Str("command", packet.Command.Name())
+
 	if script != "" {
 		entry = entry.Str("script", script)
 	}
@@ -149,7 +152,7 @@ func main() {
 	}
 }
 
-var nextCID atomic.Uint64
+var nextCID atomic.Uint64 //nolint:gochecknoglobals
 
 type packetWrapper struct {
 	packet *memd.Packet
@@ -160,9 +163,11 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 	defer rawConn.Close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
 	cid := nextCID.Inc()
 	logger := log.With().Uint64("cid", cid).Logger()
 	logger.Info().Str("remoteAddr", rawConn.RemoteAddr().String()).Msg("ohai")
+
 	beRawConn, err := net.Dial("tcp", net.JoinHostPort(*BackendHost, strconv.Itoa(*BackendPort)))
 	if err != nil {
 		panic(err)
@@ -171,8 +176,9 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 	feConn := memd.NewConn(rawConn)
 	beConn := memd.NewConn(beRawConn)
 
-	bePackets := make(chan packetWrapper)
+	// fePackets is a channel of packets to send to the front-end, similarly bePackets to send to the back-end.
 	fePackets := make(chan packetWrapper)
+	bePackets := make(chan packetWrapper)
 	go func() {
 		for {
 			packet, _, err := feConn.ReadPacket()
@@ -189,7 +195,7 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 				panic(err)
 			}
 			logPacket(logger, false, packet, "")
-			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, false, fePackets, bePackets); err != nil {
+			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, false, bePackets, fePackets); err != nil {
 				logger.Error().Err(err).Msg("script evaluation error")
 			}
 		}
@@ -210,7 +216,7 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 				panic(err)
 			}
 			logPacket(logger, true, packet, "")
-			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, true, fePackets, bePackets); err != nil {
+			if err := scripts.EvaluateScriptForPacket(ctx, logger, packet, true, bePackets, fePackets); err != nil {
 				logger.Error().Err(err).Str("side", "be").Msg("script evaluation error")
 			}
 		}
@@ -220,27 +226,27 @@ func handleConn(ctx context.Context, rawConn net.Conn, scripts *PacketScripts) {
 		select {
 		case <-ctx.Done():
 			return
-		case fe := <-fePackets:
-			if fe.script != "" {
-				logPacket(logger, false, fe.packet, fe.script)
-			}
-			if err := beConn.WritePacket(fe.packet); err != nil {
-				panic(err)
-			}
 		case be := <-bePackets:
 			if be.script != "" {
-				logPacket(logger, true, be.packet, be.script)
+				logPacket(logger, false, be.packet, be.script)
+			}
+			if err := beConn.WritePacket(be.packet); err != nil {
+				panic(err)
+			}
+		case fe := <-fePackets:
+			if fe.script != "" {
+				logPacket(logger, true, fe.packet, fe.script)
 			}
 			// HELO needs special handling to ensure we enable the features
-			if be.packet.Command == memd.CmdHello {
-				for feat := 0; feat < (len(be.packet.Value) / 2); feat++ {
-					feature := memd.HelloFeature(binary.BigEndian.Uint16(be.packet.Value[feat*2 : (feat+1)*2]))
+			if fe.packet.Command == memd.CmdHello {
+				for feat := 0; feat < (len(fe.packet.Value) / 2); feat++ { //nolint:gomnd
+					feature := memd.HelloFeature(binary.BigEndian.Uint16(fe.packet.Value[feat*2 : (feat+1)*2]))
 					// ensure we enable it on both the FE and BE
 					feConn.EnableFeature(feature)
 					beConn.EnableFeature(feature)
 				}
 			}
-			if err := feConn.WritePacket(be.packet); err != nil {
+			if err := feConn.WritePacket(fe.packet); err != nil {
 				panic(err)
 			}
 		}

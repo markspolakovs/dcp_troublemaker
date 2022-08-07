@@ -43,6 +43,7 @@ func (ps *PacketScripts) GetFuncForOp(cmd memd.CmdCode) (otto.Value, error) {
 	if err != nil {
 		return otto.Value{}, err
 	}
+
 	if val.IsUndefined() {
 		return otto.Value{}, ErrFuncNotDefined
 	}
@@ -66,15 +67,15 @@ func packetFromObject(obj *otto.Object) *memd.Packet {
 		Key:          objCast(obj, "Key", parseByteArray, true),
 		Extras:       objCast(obj, "Extras", parseByteArray, true),
 		Value:        objCast(obj, "Value", parseByteArray, true),
-		//BarrierFrame:           nil,
-		//DurabilityLevelFrame:   nil,
-		//DurabilityTimeoutFrame: nil,
-		//StreamIDFrame:          nil,
-		//OpenTracingFrame:       nil,
-		//ServerDurationFrame:    nil,
-		//UserImpersonationFrame: nil,
-		//PreserveExpiryFrame:    nil,
-		//UnsupportedFrames:      nil,
+		// BarrierFrame:           nil,
+		// DurabilityLevelFrame:   nil,
+		// DurabilityTimeoutFrame: nil,
+		// StreamIDFrame:          nil,
+		// OpenTracingFrame:       nil,
+		// ServerDurationFrame:    nil,
+		// UserImpersonationFrame: nil,
+		// PreserveExpiryFrame:    nil,
+		// UnsupportedFrames:      nil,
 	}
 }
 

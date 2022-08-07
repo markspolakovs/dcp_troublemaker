@@ -14,7 +14,7 @@ func GetFunctionName(i interface{}) string {
 	return runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
 }
 
-func objCast[T any](obj *otto.Object, key string, parser func(otto.Value) (T, error), undefinedOK bool) T {
+func objCast[T any](obj *otto.Object, key string, parser func(otto.Value) (T, error), undefinedOK bool) T { //nolint:ireturn
 	val, err := obj.Get(key)
 	if err != nil {
 		panic(err)
@@ -29,7 +29,7 @@ func objCast[T any](obj *otto.Object, key string, parser func(otto.Value) (T, er
 	retval, err := parser(val)
 	if err != nil {
 		var zero T
-		panic(fmt.Errorf("error processing key %q with parser %s (type %T): %v", key, GetFunctionName(parser), zero, err))
+		panic(fmt.Errorf("error processing key %q with parser %s (type %T): %w", key, GetFunctionName(parser), zero, err))
 	}
 	return retval
 }

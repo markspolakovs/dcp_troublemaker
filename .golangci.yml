@@ -1,0 +1,23 @@
+run:
+  skip-files:
+    - test/main.go
+linters:
+  enable-all: true
+  disable:
+    - interfacer
+    - golint
+    - ifshort
+    - exhaustivestruct
+    - scopelint
+    - maligned
+    - goerr113
+    - exhaustruct
+    - lll
+    - wsl
+    - nlreturn
+    - funlen
+    - godox
+    - gocognit
+    - cyclop
+    - varnamelen
+    - wrapcheck
